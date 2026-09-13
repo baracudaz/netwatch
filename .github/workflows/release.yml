@@ -53,6 +53,16 @@ jobs:
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             name: netwatch-windows-x86_64.exe
+          # Not musl-static like the other Linux targets: Debian's armel
+          # port (what Trixie ships for Marvell Kirkwood NAS boxes like
+          # the Iomega ix2-dl) is glibc, and Ubuntu's runners have no armel
+          # sysroot to build a musl target against. libpcap is still
+          # static (built below), so the only runtime dependency this
+          # binary picks up beyond the other Linux builds is glibc itself
+          # — already on any real Debian install.
+          - target: armv5te-unknown-linux-gnueabi
+            os: ubuntu-latest
+            name: netwatch-linux-armv5te
 
     runs-on: ${{ matrix.os }}
     steps:
@@ -63,6 +73,20 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
+
+      - name: Install armv5te cross-compiler (Iomega ix2-dl / Marvell Kirkwood, Debian armel)
+        if: matrix.target == 'armv5te-unknown-linux-gnueabi'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-arm-linux-gnueabi flex bison
+          echo "CARGO_TARGET_ARMV5TE_UNKNOWN_LINUX_GNUEABI_LINKER=arm-linux-gnueabi-gcc" >> $GITHUB_ENV
+          # mimalloc-sys and ring compile C/asm sources from scratch, so
+          # cc-rs needs to be told which cross compiler to use rather than
+          # guessing from the host toolchain.
+          echo "CC_armv5te_unknown_linux_gnueabi=arm-linux-gnueabi-gcc" >> $GITHUB_ENV
+          echo "AR_armv5te_unknown_linux_gnueabi=arm-linux-gnueabi-ar" >> $GITHUB_ENV
+          echo "PCAP_CC=arm-linux-gnueabi-gcc" >> $GITHUB_ENV
+          echo "PCAP_HOST=arm-linux-gnueabi" >> $GITHUB_ENV
 
       - name: Install zig + cargo-zigbuild (Linux musl)
         if: contains(matrix.target, 'linux-musl')
@@ -90,8 +114,8 @@ jobs:
           echo "PCAP_CC=${TRIPLE}-gcc" >> $GITHUB_ENV
           echo "PCAP_HOST=${TRIPLE}" >> $GITHUB_ENV
 
-      - name: Build static libpcap (Linux musl)
-        if: contains(matrix.target, 'linux-musl')
+      - name: Build static libpcap (Linux musl, armv5te)
+        if: contains(matrix.target, 'linux-musl') || matrix.target == 'armv5te-unknown-linux-gnueabi'
         run: |
           LIBPCAP_VERSION=1.10.5
           PREFIX="${RUNNER_TEMP}/pcap-${{ matrix.target }}"
