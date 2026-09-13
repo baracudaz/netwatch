@@ -1493,14 +1493,27 @@ impl PacketCollector {
                 }
                 match cap.next_packet() {
                     Ok(packet) => {
-                        if let Some(mut parsed) = parse_packet(packet.data, &counter, &dns) {
+                        // Defensive clamp: the `pcap` crate builds this slice
+                        // from libpcap's raw `caplen` with no validation
+                        // (`slice::from_raw_parts(ptr, header.caplen)`). On at
+                        // least one driver/kernel combo (mv643xx_eth on an
+                        // old Kirkwood kernel) libpcap has been observed
+                        // returning a `caplen` larger than the buffer it
+                        // actually captured into, which turns every read of
+                        // `packet.data` into an out-of-bounds read -- a
+                        // segfault with no panic, since the slice's own (bad)
+                        // length metadata makes normal bounds checks pass.
+                        // We never asked for more than CAPTURE_SNAPLEN bytes,
+                        // so nothing beyond that can be genuine packet data.
+                        let data = &packet.data[..packet.data.len().min(CAPTURE_SNAPLEN as usize)];
+                        if let Some(mut parsed) = parse_packet(data, &counter, &dns) {
                             if let (Some(sp), Some(dp)) = (parsed.src_port, parsed.dst_port) {
                                 let proto = if parsed.tcp_flags.is_some() {
                                     StreamProtocol::Tcp
                                 } else {
                                     StreamProtocol::Udp
                                 };
-                                let payload = extract_app_payload(packet.data, proto);
+                                let payload = extract_app_payload(data, proto);
                                 let (idx, app_proto, decrypted) = {
                                     let mut t =
                                         crate::app::safe_lock(&tracker, "packets::capture_loop");
