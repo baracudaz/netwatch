@@ -62,12 +62,21 @@ jobs:
           # beyond the other Linux builds is glibc itself.
           #
           # Built inside a `debian:bookworm` container, not on the
-          # ubuntu-latest host directly: Ubuntu 24.04's own
-          # gcc-arm-linux-gnueabi links against glibc 2.39, which a
-          # Kirkwood box still on bookworm (glibc 2.36 -- still a
-          # supported armel release) can't run ("GLIBC_2.3x not found").
-          # Building inside bookworm itself makes that floor exact rather
-          # than guessed.
+          # ubuntu-latest host directly, for two reasons:
+          #
+          # 1. glibc floor. Ubuntu 24.04's gcc-arm-linux-gnueabi links
+          #    against glibc 2.39, which a Kirkwood box still on bookworm
+          #    (glibc 2.36, a supported armel release) can't run.
+          #
+          # 2. time_t ABI. Do not bump this to trixie or a newer Ubuntu.
+          #    Their armel gcc defaults to _TIME_BITS=64, which grows
+          #    libpcap's `struct pcap_pkthdr` from 16 to 24 bytes and moves
+          #    `caplen` from offset 8 to 16. Rust's `libc` crate still uses
+          #    32-bit time_t on this target, so the `pcap` crate would read
+          #    tv_usec as `caplen` and segfault seconds into a capture.
+          #    Bookworm's gcc 12 predates Debian's 64-bit time_t switch. The
+          #    build step asserts the 16-byte layout, so a toolchain change
+          #    fails the release build instead of shipping a crashing binary.
           #
           # zig (cargo-zigbuild) was tried first, since it's already how
           # the musl targets pin an old glibc/musl floor -- rejected after
@@ -191,6 +200,13 @@ jobs:
             make -j"$(nproc)"
             make install
 
+            # libpcap must use the 32-bit time_t layout Rust expects on
+            # this target. See the matrix comment for why.
+            printf "%s\n" "#include <pcap/pcap.h>" \
+              "_Static_assert(sizeof(struct pcap_pkthdr) == 16, \"pcap_pkthdr is not the 32-bit time_t layout Rust expects\");" \
+              > /tmp/pkthdr_abi.c
+            arm-linux-gnueabi-gcc -I/tmp/pcap-out/include -fsyntax-only /tmp/pkthdr_abi.c
+
             export CARGO_TARGET_ARMV5TE_UNKNOWN_LINUX_GNUEABI_LINKER=arm-linux-gnueabi-gcc
             # mimalloc-sys and ring compile C/asm sources from scratch, so
             # cc-rs needs to be told which cross compiler to use rather
@@ -198,6 +214,9 @@ jobs:
             export CC_armv5te_unknown_linux_gnueabi=arm-linux-gnueabi-gcc
             export AR_armv5te_unknown_linux_gnueabi=arm-linux-gnueabi-ar
             export LIBPCAP_LIBDIR=/tmp/pcap-out/lib
+            # pcap can't read the version of an ARM library from this
+            # x86_64 host, so pin it like the musl builds do.
+            export LIBPCAP_VER=${LIBPCAP_VERSION}
             cd /work
             cargo build --release --target armv5te-unknown-linux-gnueabi
           '

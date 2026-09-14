@@ -1496,15 +1496,17 @@ impl PacketCollector {
                         // `packet.data` is built by the `pcap` crate as
                         // `slice::from_raw_parts(ptr, header.caplen)` before we
                         // ever see it (see `Packet::new`), so a bad `caplen`
-                        // is UB the moment that slice exists -- clamping it
-                        // afterward doesn't undo that. `header.caplen` itself
-                        // is a plain field read, safe on its own, so check it
-                        // first and never touch `packet.data` at all if it
-                        // exceeds what we asked libpcap to capture. Seen in
-                        // practice on the mv643xx_eth driver / an old
-                        // Kirkwood kernel, which handed back a caplen larger
-                        // than the buffer it actually captured into --
-                        // instant SIGSEGV on the first real read.
+                        // is UB the moment that slice exists. Skip the packet
+                        // without touching `packet.data` if `caplen` exceeds
+                        // what we asked libpcap to capture.
+                        //
+                        // A correct build never takes this branch. It is a
+                        // last line of defence against an ABI mismatch: on
+                        // armv5te, a libpcap compiled with _TIME_BITS=64 has a
+                        // 24-byte `pcap_pkthdr`, Rust expects 16, and `caplen`
+                        // is read from tv_usec. That was the Iomega ix2-dl
+                        // segfault. The release build asserts the 16-byte
+                        // layout, so fix the build if this ever fires.
                         if packet.header.caplen > CAPTURE_SNAPLEN as u32 {
                             continue;
                         }
